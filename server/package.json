@@ -1,0 +1,8 @@
+{
+  "name": "resource-co-ably-token-server",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "ably": "^2.27.0"
+  }
+}
