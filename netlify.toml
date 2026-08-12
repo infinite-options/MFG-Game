@@ -1,0 +1,13 @@
+[build]
+  command = "npx expo export -p web"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"
+
+# Lets the app call a short, stable path instead of the raw
+# /.netlify/functions/ably-token URL.
+[[redirects]]
+  from = "/api/ably-token"
+  to = "/.netlify/functions/ably-token"
+  status = 200

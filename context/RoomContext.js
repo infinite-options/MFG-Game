@@ -7,8 +7,12 @@ import { getOrCreatePlayerId } from '../utils/playerIdentity';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../utils/roomCode';
 
 // Multiplayer is a strictly additive layer: this file only ever *reads*
-// useGame()'s state (cash, hasWon) to broadcast it, and never dispatches
-// into it. Solo mode never touches this file's code paths at all.
+// useGame()'s state (cash, hasWon) to broadcast it — with one deliberate
+// exception, resetGame() at race start (see applyRaceStart below), so every
+// player begins a race from the same $100 baseline instead of carrying over
+// leftover cash from a previous game. It never touches game logic beyond
+// that single, well-defined action. Solo mode never touches this file's code
+// paths at all.
 //
 // Trust model, deliberately accepted: there is no shared backend simulating
 // anyone's economy, so a tampered client could broadcast a fabricated cash
@@ -46,6 +50,7 @@ export function RoomProvider({ children }) {
   const myIdRef = useRef(null);
   const myNameRef = useRef('Player');
   const hasPublishedWinRef = useRef(false);
+  const raceStartAppliedRef = useRef(false);
   const lastSnapshotAtRef = useRef(0);
   const pendingSnapshotTimeoutRef = useRef(null);
 
@@ -91,6 +96,10 @@ export function RoomProvider({ children }) {
     }
     const client = new Ably.Realtime({
       clientId: myIdRef.current,
+      // Default is 15s before an abrupt drop triggers a presence 'leave' —
+      // tuned down so the room's paused state feels responsive rather than
+      // leaving everyone staring at a frozen screen wondering what happened.
+      transportParams: { remainPresentFor: 6000 },
       authCallback: (tokenParams, callback) => {
         if (!TOKEN_ENDPOINT_URL) {
           callback('Multiplayer is not configured: missing token endpoint', null);
@@ -132,7 +141,39 @@ export function RoomProvider({ children }) {
     setInRoom(false);
     setRoom(initialRoomState);
     hasPublishedWinRef.current = false;
+    raceStartAppliedRef.current = false;
     currentRoomCodeRef.current = null;
+  }, []);
+
+  // Applying race_start is idempotent and shared between the live subscription
+  // and history replay after reconnecting (see the AppState effect below) —
+  // both can observe the same message, and resetGame() must only ever fire once.
+  const applyRaceStart = useCallback(
+    (expectedIds) => {
+      if (raceStartAppliedRef.current) return;
+      raceStartAppliedRef.current = true;
+      setRoom((r) => ({ ...r, raceStarted: true, expectedIds: new Set(expectedIds) }));
+      game.resetGame();
+    },
+    [game.resetGame]
+  );
+
+  const applyPlayerWon = useCallback((id) => {
+    setRoom((r) => {
+      if (r.winnerId) return r; // first message in delivered order wins, ignore the rest
+      return { ...r, winnerId: id, raceEnded: true };
+    });
+  }, []);
+
+  const applyPlayerLeft = useCallback((id) => {
+    setRoom((r) => {
+      if (!r.expectedIds) return r;
+      const nextExpected = new Set(r.expectedIds);
+      nextExpected.delete(id);
+      const players = { ...r.players };
+      delete players[id];
+      return { ...r, expectedIds: nextExpected, players };
+    });
   }, []);
 
   const attachSubscriptions = useCallback(
@@ -148,28 +189,9 @@ export function RoomProvider({ children }) {
         }));
       });
 
-      channel.subscribe('player_won', (msg) => {
-        setRoom((r) => {
-          if (r.winnerId) return r; // first message in delivered order wins, ignore the rest
-          return { ...r, winnerId: msg.data.id, raceEnded: true };
-        });
-      });
-
-      channel.subscribe('player_left', (msg) => {
-        const { id } = msg.data;
-        setRoom((r) => {
-          if (!r.expectedIds) return r;
-          const nextExpected = new Set(r.expectedIds);
-          nextExpected.delete(id);
-          const players = { ...r.players };
-          delete players[id];
-          return { ...r, expectedIds: nextExpected, players };
-        });
-      });
-
-      channel.subscribe('race_start', (msg) => {
-        setRoom((r) => ({ ...r, raceStarted: true, expectedIds: new Set(msg.data.expectedIds) }));
-      });
+      channel.subscribe('player_won', (msg) => applyPlayerWon(msg.data.id));
+      channel.subscribe('player_left', (msg) => applyPlayerLeft(msg.data.id));
+      channel.subscribe('race_start', (msg) => applyRaceStart(msg.data.expectedIds));
 
       channel.presence.subscribe(['enter', 'update', 'leave'], async () => {
         try {
@@ -180,7 +202,7 @@ export function RoomProvider({ children }) {
         }
       });
     },
-    [applyPresenceSet]
+    [applyPresenceSet, applyPlayerWon, applyPlayerLeft, applyRaceStart]
   );
 
   const joinRoom = useCallback(
@@ -334,8 +356,12 @@ export function RoomProvider({ children }) {
   }, [inRoom, game.state.cash, game.state.hasWon]);
 
   // RN suspends the JS runtime while backgrounded; Ably's own reconnect can't
-  // be assumed to have kept up. On foreground return, force a reconnect check
-  // and refresh presence from scratch rather than trusting stale local state.
+  // be assumed to have kept up. On foreground return: reconnect if needed,
+  // re-enter presence defensively (a long suspension can silently drop our
+  // own entry, making everyone else see US as the missing player), refresh
+  // the live presence set, and replay recent channel history to catch up on
+  // race_start/player_won/player_left messages that arrived while this
+  // device couldn't receive live events at all.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
@@ -345,13 +371,32 @@ export function RoomProvider({ children }) {
       if (client.connection.state === 'suspended' || client.connection.state === 'disconnected') {
         client.connection.connect();
       }
-      channel.presence
-        .get()
-        .then(applyPresenceSet)
-        .catch(() => {});
+      (async () => {
+        try {
+          await channel.presence.enter({ name: myNameRef.current });
+        } catch (e) {
+          // already present, or connection not ready yet — harmless either way
+        }
+        try {
+          const members = await channel.presence.get();
+          applyPresenceSet(members);
+        } catch (e) {
+          // next presence event or the history replay below will catch it up
+        }
+        try {
+          const history = await channel.history({ direction: 'forwards', limit: 100 });
+          history.items.forEach((item) => {
+            if (item.name === 'race_start') applyRaceStart(item.data.expectedIds);
+            else if (item.name === 'player_won') applyPlayerWon(item.data.id);
+            else if (item.name === 'player_left') applyPlayerLeft(item.data.id);
+          });
+        } catch (e) {
+          // best-effort catch-up — live events from here on will still arrive normally
+        }
+      })();
     });
     return () => sub.remove();
-  }, [applyPresenceSet]);
+  }, [applyPresenceSet, applyRaceStart, applyPlayerWon, applyPlayerLeft]);
 
   const value = useMemo(
     () => ({
