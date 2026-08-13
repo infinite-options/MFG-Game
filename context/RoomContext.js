@@ -64,6 +64,14 @@ export function RoomProvider({ children }) {
     });
   }, []);
 
+  // Mirrors game.state.cash/hasWon into a ref so the request_snapshot responder
+  // below (an Ably subscription callback, not a render) always publishes the
+  // current value instead of whatever was in scope when attachSubscriptions ran.
+  const gameStateRef = useRef({ cash: game.state.cash, hasWon: game.state.hasWon });
+  useEffect(() => {
+    gameStateRef.current = { cash: game.state.cash, hasWon: game.state.hasWon };
+  }, [game.state.cash, game.state.hasWon]);
+
   const applyPresenceSet = useCallback((members) => {
     setRoom((r) => {
       const players = { ...r.players };
@@ -193,6 +201,20 @@ export function RoomProvider({ children }) {
       channel.subscribe('player_left', (msg) => applyPlayerLeft(msg.data.id));
       channel.subscribe('race_start', (msg) => applyRaceStart(msg.data.expectedIds));
 
+      // A newly-joined or just-reconnected client has no way to learn
+      // existing players' real cash — presence only carries identity, and
+      // each client's own snapshot publish (below) only reaches whoever was
+      // already subscribed at that moment. So latecomers ask, and everyone
+      // else answers with their current value from gameStateRef.
+      channel.subscribe('request_snapshot', (msg) => {
+        if (msg.data.id === myIdRef.current) return;
+        channel.publish('player_snapshot', {
+          id: myIdRef.current,
+          cash: gameStateRef.current.cash,
+          hasWon: gameStateRef.current.hasWon,
+        });
+      });
+
       channel.presence.subscribe(['enter', 'update', 'leave'], async () => {
         try {
           const members = await channel.presence.get();
@@ -245,6 +267,9 @@ export function RoomProvider({ children }) {
         const members = await channel.presence.get();
         channelRef.current = channel;
         applyPresenceSet(members);
+        // Ask whoever's already here for their real cash — presence alone
+        // only tells us who's present, not what they've earned.
+        channel.publish('request_snapshot', { id: myIdRef.current }).catch(() => {});
         setRoom((r) => ({ ...initialRoomState, roomCode: code, players: r.players }));
         setInRoom(true);
         return { success: true, message: asHost ? `Room ${code} created` : `Joined room ${code}` };
@@ -382,6 +407,14 @@ export function RoomProvider({ children }) {
           applyPresenceSet(members);
         } catch (e) {
           // next presence event or the history replay below will catch it up
+        }
+        try {
+          // History replay below only covers race_start/player_won/player_left —
+          // cash can have changed for everyone else during the time this device
+          // couldn't receive live events, so re-request current snapshots too.
+          await channel.publish('request_snapshot', { id: myIdRef.current });
+        } catch (e) {
+          // best-effort — the next live snapshot from any player will still arrive normally
         }
         try {
           const history = await channel.history({ direction: 'forwards', limit: 100 });

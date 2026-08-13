@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 
@@ -13,7 +13,9 @@ import MenuTile from '../components/MenuTile';
 import HowToPlayModal from '../components/HowToPlayModal';
 import { useTheme } from '../context/ThemeContext';
 import { useGame, OBJECTIVE_TARGET } from '../context/GameContext';
+import { useRoom } from '../context/RoomContext';
 import { TAB_ICONS, MISC_ICONS, AppIcon } from '../constants/icons';
+import { BUILD_VERSION } from '../constants/buildInfo';
 
 const NAV_TARGETS = [
   { route: 'Market', label: 'Market' },
@@ -25,8 +27,25 @@ const NAV_TARGETS = [
 export default function HomeScreen() {
   const { theme, spacing, typeScale } = useTheme();
   const { state, progress } = useGame();
+  const { inRoom, raceEnded, winnerId, myId } = useRoom();
   const navigation = useNavigation();
   const [showHowToPlay, setShowHowToPlay] = useState(false);
+  const hasNavigatedOnRaceEnd = useRef(false);
+
+  // Own wins navigate from ObjectiveScreen (where selling happens, so it's
+  // always mounted when state.hasWon flips). A win by someone ELSE can
+  // arrive while any tab is focused, so it's handled here instead — Home is
+  // the tab navigator's initial route and so is guaranteed already mounted.
+  useEffect(() => {
+    if (inRoom && raceEnded && winnerId && winnerId !== myId) {
+      if (!hasNavigatedOnRaceEnd.current) {
+        hasNavigatedOnRaceEnd.current = true;
+        navigation.navigate('Results');
+      }
+    } else {
+      hasNavigatedOnRaceEnd.current = false;
+    }
+  }, [inRoom, raceEnded, winnerId, myId, navigation]);
 
   return (
     <ScreenContainer
@@ -82,6 +101,15 @@ export default function HomeScreen() {
           />
         ))}
       </View>
+
+      <Text
+        style={[
+          typeScale.caption,
+          { color: theme.textMuted, textAlign: 'center', marginTop: spacing.xl },
+        ]}
+      >
+        Build {BUILD_VERSION}
+      </Text>
     </ScreenContainer>
   );
 }
