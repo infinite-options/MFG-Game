@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import ScreenHeader from './ScreenHeader';
+import BuildTag from './BuildTag';
 
 export default function ScreenContainer({ title, subtitle, headerRight, children, scroll = true }) {
   const { theme, spacing } = useTheme();
@@ -26,6 +27,7 @@ export default function ScreenContainer({ title, subtitle, headerRight, children
           {children}
         </View>
       </Wrapper>
+      <BuildTag />
     </SafeAreaView>
   );
 }

@@ -9,6 +9,7 @@ import Stepper from '../components/Stepper';
 import Button from '../components/Button';
 import ScreenHeader from '../components/ScreenHeader';
 import IconChip from '../components/IconChip';
+import BuildTag from '../components/BuildTag';
 import { useTheme } from '../context/ThemeContext';
 import { useGame, RESOURCES, RESOURCE_IDS } from '../context/GameContext';
 import { useRoom } from '../context/RoomContext';
@@ -112,6 +113,7 @@ export default function MarketScreen() {
         ) : null}
         <Button title="Go" onPress={handleGo} disabled={!!inlineMessage} />
       </View>
+      <BuildTag />
     </SafeAreaView>
   );
 }

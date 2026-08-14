@@ -15,7 +15,6 @@ import { useTheme } from '../context/ThemeContext';
 import { useGame, OBJECTIVE_TARGET } from '../context/GameContext';
 import { useRoom } from '../context/RoomContext';
 import { TAB_ICONS, MISC_ICONS, AppIcon } from '../constants/icons';
-import { BUILD_VERSION } from '../constants/buildInfo';
 
 const NAV_TARGETS = [
   { route: 'Market', label: 'Market' },
@@ -101,15 +100,6 @@ export default function HomeScreen() {
           />
         ))}
       </View>
-
-      <Text
-        style={[
-          typeScale.caption,
-          { color: theme.textMuted, textAlign: 'center', marginTop: spacing.xl },
-        ]}
-      >
-        Build {BUILD_VERSION}
-      </Text>
     </ScreenContainer>
   );
 }
