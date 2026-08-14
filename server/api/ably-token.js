@@ -37,6 +37,8 @@ module.exports = async function handler(req, res) {
   }
 
   if (!process.env.ABLY_API_KEY) {
+    console.log("No ABLY_API_KEY found");
+    console.error('Server misconfigured: ABLY_API_KEY not set');
     res.status(500).json({ error: 'Server misconfigured: ABLY_API_KEY not set' });
     return;
   }
