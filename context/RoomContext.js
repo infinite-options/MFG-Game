@@ -57,6 +57,11 @@ export function RoomProvider({ children }) {
   const [inRoom, setInRoom] = useState(false);
   const [connectionState, setConnectionState] = useState('initialized');
   const [room, setRoom] = useState(initialRoomState);
+  // keyName is the appId.keyId portion of the Ably API key, returned as part
+  // of every token exchange — unlike the key's secret half, it's meant to be
+  // client-visible, so it's safe to surface (see BuildTag) for eyeballing
+  // which Ably key/environment a running instance is actually talking to.
+  const [ablyKeyName, setAblyKeyName] = useState(null);
 
   useEffect(() => {
     getOrCreatePlayerId().then((id) => {
@@ -123,7 +128,10 @@ export function RoomProvider({ children }) {
             if (!res.ok) throw new Error(`Token endpoint returned ${res.status}`);
             return res.json();
           })
-          .then((tokenRequest) => callback(null, tokenRequest))
+          .then((tokenRequest) => {
+            if (tokenRequest && tokenRequest.keyName) setAblyKeyName(tokenRequest.keyName);
+            callback(null, tokenRequest);
+          })
           .catch((err) => {
             clearTimeout(timeoutId);
             callback(err.message || 'Failed to fetch Ably token', null);
@@ -445,6 +453,7 @@ export function RoomProvider({ children }) {
       winnerId: room.winnerId,
       roomPaused,
       missingPlayers,
+      ablyKeyName,
       createRoom,
       joinRoom,
       leaveRoom,
@@ -463,6 +472,7 @@ export function RoomProvider({ children }) {
       room.winnerId,
       roomPaused,
       missingPlayers,
+      ablyKeyName,
       createRoom,
       joinRoom,
       leaveRoom,
