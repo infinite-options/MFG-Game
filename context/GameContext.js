@@ -54,6 +54,33 @@ export const RECIPES = {
     craftTimeMs: 60000,
     maxHeld: 2,
   },
+  boats: {
+    id: 'boats',
+    name: 'Boats',
+    inputs: { labor: 9, wood: 6, metal: 8 },
+    yield: 2,
+    sellPrice: 350,
+    craftTimeMs: 45000,
+    maxHeld: 4,
+  },
+  musicalInstruments: {
+    id: 'musicalInstruments',
+    name: 'Musical Instruments',
+    inputs: { labor: 4, wood: 3, metal: 2, cloth: 2 },
+    yield: 8,
+    sellPrice: 250,
+    craftTimeMs: 12000,
+    maxHeld: 20,
+  },
+  tentCamping: {
+    id: 'tentCamping',
+    name: 'Tents',
+    inputs: { labor: 3, wood: 2, cloth: 5 },
+    yield: 25,
+    sellPrice: 150,
+    craftTimeMs: 8000,
+    maxHeld: 40,
+  },
 };
 
 export const RESOURCE_IDS = Object.keys(RESOURCES);
@@ -180,10 +207,13 @@ export function GameProvider({ children }) {
     [state.resources]
   );
 
-  // null | 'busy' | 'missing' | 'full' — why a recipe currently can't be crafted.
+  // null | 'busy' | 'not-claimed' | 'missing' | 'full' — why a recipe currently can't be crafted.
+  // claimedRecipeIds is optional: pass a Set to restrict crafting to claimed businesses
+  // (multiplayer only — see RoomContext), or omit/null for no restriction (solo mode).
   const craftBlockReason = useCallback(
-    (recipeId) => {
+    (recipeId, claimedRecipeIds = null) => {
       if (isManufacturing) return 'busy';
+      if (claimedRecipeIds && !claimedRecipeIds.has(recipeId)) return 'not-claimed';
       if (missingInputs(recipeId).length > 0) return 'missing';
       const recipe = RECIPES[recipeId];
       if (state.goods[recipeId] + recipe.yield > recipe.maxHeld) return 'full';
@@ -192,14 +222,20 @@ export function GameProvider({ children }) {
     [isManufacturing, missingInputs, state.goods]
   );
 
-  const canCraft = useCallback((recipeId) => craftBlockReason(recipeId) === null, [craftBlockReason]);
+  const canCraft = useCallback(
+    (recipeId, claimedRecipeIds = null) => craftBlockReason(recipeId, claimedRecipeIds) === null,
+    [craftBlockReason]
+  );
 
   const craftGood = useCallback(
-    (recipeId) => {
-      const reason = craftBlockReason(recipeId);
+    (recipeId, claimedRecipeIds = null) => {
+      const reason = craftBlockReason(recipeId, claimedRecipeIds);
       const recipe = RECIPES[recipeId];
       if (reason === 'busy') {
         return { success: false, message: 'Manufacturing in progress — please wait' };
+      }
+      if (reason === 'not-claimed') {
+        return { success: false, message: "You haven't claimed this business" };
       }
       if (reason === 'missing') {
         const names = missingInputs(recipeId)

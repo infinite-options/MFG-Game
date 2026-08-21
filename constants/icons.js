@@ -15,6 +15,9 @@ export const GOOD_ICONS = {
   furniture: { Component: MaterialCommunityIcons, name: 'sofa' },
   clothes: { Component: MaterialCommunityIcons, name: 'tshirt-crew' },
   houses: { Component: MaterialCommunityIcons, name: 'home-city' },
+  boats: { Component: MaterialCommunityIcons, name: 'sail-boat' },
+  musicalInstruments: { Component: MaterialCommunityIcons, name: 'guitar-acoustic' },
+  tentCamping: { Component: MaterialCommunityIcons, name: 'tent' },
 };
 
 export const TAB_ICONS = {

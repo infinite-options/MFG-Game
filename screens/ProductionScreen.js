@@ -19,11 +19,12 @@ import { GOOD_ICONS, RESOURCE_ICONS, AppIcon } from '../constants/icons';
 function RecipeCard({ id, index, isActive }) {
   const { theme, spacing, typeScale } = useTheme();
   const { state, craftGood, craftBlockReason, missingInputs } = useGame();
-  const { inRoom, roomPaused, raceEnded } = useRoom();
+  const { inRoom, roomPaused, raceEnded, claimedByMeRecipeIds } = useRoom();
   const showToast = useToast();
 
   const recipe = RECIPES[id];
-  const blockReason = craftBlockReason(id);
+  const claimedGate = inRoom ? claimedByMeRecipeIds : null;
+  const blockReason = craftBlockReason(id, claimedGate);
   const missing = missingInputs(id);
   const owned = state.goods[id];
   const manufacturing = state.manufacturing;
@@ -41,6 +42,8 @@ function RecipeCard({ id, index, isActive }) {
       statusMessage = 'The race has ended';
     } else if (roomPaused) {
       statusMessage = 'Room paused — waiting for a player to reconnect';
+    } else if (blockReason === 'not-claimed') {
+      statusMessage = "You haven't claimed this business — unavailable for this race";
     } else if (blockReason === 'missing') {
       statusMessage = `Missing ${missing.map((rid) => RESOURCES[rid].name).join(', ')}`;
     } else if (blockReason === 'full') {
@@ -49,7 +52,7 @@ function RecipeCard({ id, index, isActive }) {
   }
 
   const handleCraft = () => {
-    const result = craftGood(id);
+    const result = craftGood(id, claimedGate);
     showToast(result.message, result.success ? 'success' : 'error');
   };
 

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Text } from 'react-native';
+import { Text, View } from 'react-native';
 
 import ScreenContainer from '../components/ScreenContainer';
 import Card from '../components/Card';
@@ -10,11 +10,24 @@ import IconChip from '../components/IconChip';
 import { useTheme } from '../context/ThemeContext';
 import { useRoom } from '../context/RoomContext';
 import { useToast } from '../context/ToastContext';
-import { MISC_ICONS } from '../constants/icons';
+import { RECIPE_IDS, RECIPES } from '../context/GameContext';
+import { MISC_ICONS, GOOD_ICONS } from '../constants/icons';
 
 export default function LobbyScreen({ navigation }) {
   const { theme, spacing, typeScale } = useTheme();
-  const { roomCode, players, hostId, myId, raceStarted, startRace, leaveRoom } = useRoom();
+  const {
+    roomCode,
+    players,
+    hostId,
+    myId,
+    raceStarted,
+    startRace,
+    leaveRoom,
+    claimedRecipeIds,
+    claimedByMeRecipeIds,
+    businessPoolSize,
+    claimBusiness,
+  } = useRoom();
   const showToast = useToast();
 
   useEffect(() => {
@@ -70,6 +83,54 @@ export default function LobbyScreen({ navigation }) {
           </Row>
         ))}
       </Card>
+
+      <Row justify="space-between" style={{ marginBottom: spacing.sm }}>
+        <Text style={[typeScale.h3, { color: theme.text }]}>Businesses</Text>
+        <Badge label={`${claimedRecipeIds.size}/${businessPoolSize} claimed`} variant="neutral" />
+      </Row>
+      <Card style={{ marginBottom: spacing.xs }}>
+        {RECIPE_IDS.map((id, index) => {
+          const mine = claimedByMeRecipeIds.has(id);
+          const claimed = claimedRecipeIds.has(id);
+          const poolFull = claimedRecipeIds.size >= businessPoolSize;
+          return (
+            <Row
+              key={id}
+              justify="space-between"
+              style={{
+                paddingVertical: spacing.sm,
+                borderTopWidth: index === 0 ? 0 : 1,
+                borderTopColor: theme.border,
+              }}
+            >
+              <Row gap="sm">
+                <IconChip entry={GOOD_ICONS[id]} tone={mine ? 'accent' : 'primary'} size={32} iconSize={16} />
+                <Text style={[typeScale.body, { color: theme.text }]}>{RECIPES[id].name}</Text>
+              </Row>
+              {mine ? (
+                <Badge label="Claimed" variant="success" />
+              ) : claimed ? (
+                <Row gap="xs">
+                  <IconChip entry={MISC_ICONS.lock} tone="neutral" size={24} iconSize={12} />
+                  <Text style={[typeScale.caption, { color: theme.textMuted }]}>Claimed</Text>
+                </Row>
+              ) : poolFull ? (
+                <Badge label="Unavailable" variant="neutral" />
+              ) : (
+                <Button title="Claim" size="sm" fullWidth={false} onPress={() => claimBusiness(id)} />
+              )}
+            </Row>
+          );
+        })}
+      </Card>
+      {businessPoolSize - claimedRecipeIds.size > 0 ? (
+        <Text style={[typeScale.caption, { color: theme.textMuted, marginBottom: spacing.lg }]}>
+          {businessPoolSize - claimedRecipeIds.size} business
+          {businessPoolSize - claimedRecipeIds.size === 1 ? '' : 'es'} will go unclaimed if you start now
+        </Text>
+      ) : (
+        <View style={{ marginBottom: spacing.lg }} />
+      )}
 
       {isHost ? (
         <Button

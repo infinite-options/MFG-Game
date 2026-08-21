@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState } from 'react-native';
 import * as Ably from 'ably';
 
-import { useGame } from './GameContext';
+import { useGame, RECIPE_IDS } from './GameContext';
 import { getOrCreatePlayerId } from '../utils/playerIdentity';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../utils/roomCode';
 
@@ -33,6 +33,8 @@ const initialRoomState = {
   raceStarted: false,
   raceEnded: false,
   winnerId: null,
+  claims: {}, // recipeId -> claiming player's id
+  lockedPoolSize: null, // number of businesses claimable this race, locked from the first business_claim seen
 };
 
 function channelNameFor(roomCode) {
@@ -181,14 +183,37 @@ export function RoomProvider({ children }) {
     });
   }, []);
 
+  // Claims are only released on an explicit leave, and only pre-race — once
+  // raceStarted, a departure must never change what other players can craft.
+  // This has to run ahead of the expectedIds guard below: expectedIds is null
+  // for the entire Lobby phase (it's only set by applyRaceStart), so a leave
+  // during Lobby would otherwise hit that early return and never touch claims.
   const applyPlayerLeft = useCallback((id) => {
     setRoom((r) => {
-      if (!r.expectedIds) return r;
+      const claims = r.raceStarted
+        ? r.claims
+        : Object.fromEntries(Object.entries(r.claims).filter(([, pid]) => pid !== id));
+      if (!r.expectedIds) return { ...r, claims };
       const nextExpected = new Set(r.expectedIds);
       nextExpected.delete(id);
       const players = { ...r.players };
       delete players[id];
-      return { ...r, expectedIds: nextExpected, players };
+      return { ...r, expectedIds: nextExpected, players, claims };
+    });
+  }, []);
+
+  // Idempotent and first-come-first-served, shared between the live
+  // subscription, join-time history replay, and reconnect history replay —
+  // any of them can observe the same message more than once. Every client
+  // processes business_claim messages in the same Ably-guaranteed order, so
+  // they all converge on the same claims and the same locked pool size even
+  // though no server arbitrates between simultaneous claims.
+  const applyBusinessClaim = useCallback((recipeId, playerId, poolSize) => {
+    setRoom((r) => {
+      if (r.claims[recipeId]) return r;
+      const lockedPoolSize = r.lockedPoolSize ?? poolSize;
+      if (Object.keys(r.claims).length >= lockedPoolSize) return { ...r, lockedPoolSize };
+      return { ...r, lockedPoolSize, claims: { ...r.claims, [recipeId]: playerId } };
     });
   }, []);
 
@@ -208,6 +233,9 @@ export function RoomProvider({ children }) {
       channel.subscribe('player_won', (msg) => applyPlayerWon(msg.data.id));
       channel.subscribe('player_left', (msg) => applyPlayerLeft(msg.data.id));
       channel.subscribe('race_start', (msg) => applyRaceStart(msg.data.expectedIds));
+      channel.subscribe('business_claim', (msg) =>
+        applyBusinessClaim(msg.data.recipeId, msg.data.playerId, msg.data.poolSize)
+      );
 
       // A newly-joined or just-reconnected client has no way to learn
       // existing players' real cash — presence only carries identity, and
@@ -232,7 +260,7 @@ export function RoomProvider({ children }) {
         }
       });
     },
-    [applyPresenceSet, applyPlayerWon, applyPlayerLeft, applyRaceStart]
+    [applyPresenceSet, applyPlayerWon, applyPlayerLeft, applyRaceStart, applyBusinessClaim]
   );
 
   const joinRoom = useCallback(
@@ -255,6 +283,7 @@ export function RoomProvider({ children }) {
         const channel = client.channels.get(channelNameFor(code));
         await channel.attach();
 
+        let claimHistoryItems = [];
         if (!asHost) {
           const existingMembers = await channel.presence.get();
           if (existingMembers.length === 0) {
@@ -268,6 +297,9 @@ export function RoomProvider({ children }) {
           if (alreadyStarted) {
             return { success: false, message: 'Race already in progress in this room' };
           }
+          // history is newest-first; replay oldest-first so the first claim
+          // ever made is the one that locks the pool size (see applyBusinessClaim).
+          claimHistoryItems = history.items.filter((m) => m.name === 'business_claim').reverse();
         }
 
         attachSubscriptions(channel);
@@ -278,7 +310,14 @@ export function RoomProvider({ children }) {
         // Ask whoever's already here for their real cash — presence alone
         // only tells us who's present, not what they've earned.
         channel.publish('request_snapshot', { id: myIdRef.current }).catch(() => {});
+        // This reset must happen before replaying claim history below (not before
+        // fetching it above) — it wipes any stale claims left over from a
+        // previous room this client was in, and claimHistoryItems is what
+        // repopulates claims for the room actually being joined.
         setRoom((r) => ({ ...initialRoomState, roomCode: code, players: r.players }));
+        claimHistoryItems.forEach((item) =>
+          applyBusinessClaim(item.data.recipeId, item.data.playerId, item.data.poolSize)
+        );
         setInRoom(true);
         return { success: true, message: asHost ? `Room ${code} created` : `Joined room ${code}` };
       } catch (err) {
@@ -286,7 +325,7 @@ export function RoomProvider({ children }) {
         return { success: false, message: 'Could not connect — check your connection and try again' };
       }
     },
-    [applyPresenceSet, attachSubscriptions, detachCurrentChannel, getOrCreateClient]
+    [applyPresenceSet, attachSubscriptions, detachCurrentChannel, getOrCreateClient, applyBusinessClaim]
   );
 
   const createRoom = useCallback(
@@ -355,6 +394,35 @@ export function RoomProvider({ children }) {
       channelRef.current?.publish('player_left', { id });
     },
     []
+  );
+
+  const claimedRecipeIds = useMemo(() => new Set(Object.keys(room.claims)), [room.claims]);
+
+  const claimedByMeRecipeIds = useMemo(
+    () =>
+      new Set(
+        Object.entries(room.claims)
+          .filter(([, pid]) => pid === myIdRef.current)
+          .map(([recipeId]) => recipeId)
+      ),
+    [room.claims]
+  );
+
+  const businessPoolSize = useMemo(
+    () => room.lockedPoolSize ?? Math.min(players.filter((p) => p.present).length + 2, RECIPE_IDS.length),
+    [room.lockedPoolSize, players]
+  );
+
+  const claimBusiness = useCallback(
+    (recipeId) => {
+      const channel = channelRef.current;
+      if (!channel) return { success: false, message: 'Not connected' };
+      const presentCount = players.filter((p) => p.present).length;
+      const poolSize = Math.min(presentCount + 2, RECIPE_IDS.length);
+      channel.publish('business_claim', { recipeId, playerId: myIdRef.current, poolSize });
+      return { success: true };
+    },
+    [players]
   );
 
   // Publish this player's own progress. Throttled with a trailing flush so
@@ -430,6 +498,9 @@ export function RoomProvider({ children }) {
             if (item.name === 'race_start') applyRaceStart(item.data.expectedIds);
             else if (item.name === 'player_won') applyPlayerWon(item.data.id);
             else if (item.name === 'player_left') applyPlayerLeft(item.data.id);
+            else if (item.name === 'business_claim') {
+              applyBusinessClaim(item.data.recipeId, item.data.playerId, item.data.poolSize);
+            }
           });
         } catch (e) {
           // best-effort catch-up — live events from here on will still arrive normally
@@ -437,7 +508,7 @@ export function RoomProvider({ children }) {
       })();
     });
     return () => sub.remove();
-  }, [applyPresenceSet, applyRaceStart, applyPlayerWon, applyPlayerLeft]);
+  }, [applyPresenceSet, applyRaceStart, applyPlayerWon, applyPlayerLeft, applyBusinessClaim]);
 
   const value = useMemo(
     () => ({
@@ -454,11 +525,15 @@ export function RoomProvider({ children }) {
       roomPaused,
       missingPlayers,
       ablyKeyName,
+      claimedRecipeIds,
+      claimedByMeRecipeIds,
+      businessPoolSize,
       createRoom,
       joinRoom,
       leaveRoom,
       startRace,
       continueWithoutPlayer,
+      claimBusiness,
     }),
     [
       inRoom,
@@ -473,11 +548,15 @@ export function RoomProvider({ children }) {
       roomPaused,
       missingPlayers,
       ablyKeyName,
+      claimedRecipeIds,
+      claimedByMeRecipeIds,
+      businessPoolSize,
       createRoom,
       joinRoom,
       leaveRoom,
       startRace,
       continueWithoutPlayer,
+      claimBusiness,
     ]
   );
 
